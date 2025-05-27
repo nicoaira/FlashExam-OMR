@@ -136,13 +136,17 @@ def detect_answers(warped):
         results[q] = (opt, pos, col)
     return results
 
-def process_folder(folder, out_csv="results.csv"):
+def process_folder(folder, out_csv="results.csv", output_dir="output"):
+    os.makedirs(output_dir, exist_ok=True)
+    detections_dir = os.path.join(output_dir, "detections")
+    os.makedirs(detections_dir, exist_ok=True)
     rows = []
     for fname in glob.glob(os.path.join(folder, "*.png")):
         img = cv2.imread(fname)
         warped = warp_sheet(img)
         results = detect_answers(warped)  # returns {q: (opt, pos, col)}
-        ans = {q: opt for q, (opt, pos, col) in results.items()}
+        # Use '-' for unanswered questions
+        ans = {q: (opt if opt else '-') for q, (opt, pos, col) in results.items()}
         positions = {q: pos for q, (opt, pos, col) in results.items()}
         row = {"file": os.path.basename(fname)}
         row.update({f"Q{q}": ans[q] for q in sorted(ans)})
@@ -158,10 +162,14 @@ def process_folder(folder, out_csv="results.csv"):
             else:
                 radius = 30
             cv2.circle(debug, (x, y), radius, (0, 0, 255), 2)
-        debug_name = os.path.splitext(fname)[0] + '_debug.png'
+        # Save detection image in detections folder with _detections.png suffix
+        base = os.path.splitext(os.path.basename(fname))[0]
+        debug_name = os.path.join(detections_dir, f"{base}_detections.png")
         cv2.imwrite(debug_name, debug)
-    pd.DataFrame(rows).to_csv(out_csv, index=False)
-    print(f"Saved results to {out_csv}")
+    # Save CSV in output dir
+    csv_path = os.path.join(output_dir, os.path.basename(out_csv))
+    pd.DataFrame(rows).to_csv(csv_path, index=False)
+    print(f"Saved results to {csv_path}")
 
 if __name__=="__main__":
     import argparse
@@ -169,13 +177,16 @@ if __name__=="__main__":
     p.add_argument("input_folder", help="folder with scanned .png sheets")
     p.add_argument("--csv", default="results.csv")
     p.add_argument("--min-fill", type=int, default=200, help="Minimum fill threshold for answer detection (default: 200)")
+    p.add_argument("--output", default="output", help="Output directory for results and detections (default: output)")
     args = p.parse_args()
-    set_min_fill(args.min_fill)
-    # If grid not configured, launch interactive setup
+    MIN_FILL = args.min_fill
+    if not os.path.exists(args.input_folder):
+        print(f"Input folder '{args.input_folder}' does not exist.")
+        exit(1)
+    # Check if grid_config.json exists and is valid
     if not os.path.exists('grid_config.json'):
-        print('grid_config.json not found; launching grid setup GUI...')
-        # pick first sheet image as sample
-        imgs = glob.glob(os.path.join(args.input_folder, '*.png'))
+        # Try to find a sample PNG to suggest grid setup
+        imgs = glob.glob(os.path.join(args.input_folder, "*.png"))
         if not imgs:
             print('No sample PNG found in folder. Please provide an example scan.')
             sys.exit(1)
