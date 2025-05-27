@@ -24,16 +24,25 @@ def init_grid():
     ROWS = cfg['rows']
     bp = []
     if 'grids' in cfg:
-        # Multi-grid mode
+        # Multi-grid mode: use calibrated spacing and radius
         grids = cfg['grids']
         COLS = len(grids)
+        spacing = cfg.get('bubble_spacing_px')
+        radius = cfg.get('bubble_radius_px')
         for col, g in enumerate(grids):
             x0, y0, w0, h0 = g['x'], g['y'], g['w'], g['h']
+            # convert normalized to pixels
+            x0_px = x0 * WARP_W
+            y0_px = y0 * WARP_H
+            h0_px = h0 * WARP_H
             for i in range(ROWS):
+                # row center y coordinate in px
+                y_px = y0_px + (i + 0.5) * (h0_px / ROWS)
                 for j, opt in enumerate(OPTIONS):
-                    # center of bubble cell
-                    nx = x0 + w0 * (j + 0.5) / len(OPTIONS)
-                    ny = y0 + h0 * (i + 0.5) / ROWS
+                    # column center x coordinate in px: first bubble at x0_px+radius, then j*spacing
+                    x_px = x0_px + (radius or 0) + j * (spacing or 0)
+                    nx = x_px / WARP_W
+                    ny = y_px / WARP_H
                     qnum = col * ROWS + i + 1
                     bp.append((qnum, opt, (nx, ny)))
     else:
@@ -49,12 +58,17 @@ def init_grid():
                 for j, x in enumerate(xs):
                     qnum = col * ROWS + i + 1
                     bp.append((qnum, OPTIONS[j], (x, y)))
+    # Expose calibration values
+    spacing_val = cfg.get('bubble_spacing_px')
+    radius_val = cfg.get('bubble_radius_px')
     # Export globals
     globals().update({
         'WARP_W': WARP_W, 'WARP_H': WARP_H,
         'COLS': COLS, 'ROWS': ROWS,
         'OPTIONS': OPTIONS,
-        'bubble_positions': bp
+        'bubble_positions': bp,
+        'BUBBLE_SPACING': spacing_val,
+        'BUBBLE_RADIUS': radius_val
     })
     return
 
@@ -108,9 +122,11 @@ def detect_answers(warped):
     for q, opt, (nx, ny) in bubble_positions:
         x = int(nx * WARP_W)
         y = int(ny * WARP_H)
-        # crop around the bubble
-        r = 20
-        mask = gray[y-r:y+r, x-r:x+r]
+        # crop around the bubble using calibrated radius (clamp to image)
+        r = int(BUBBLE_RADIUS or 20)
+        y1 = max(0, y-r); y2 = min(WARP_H, y+r)
+        x1 = max(0, x-r); x2 = min(WARP_W, x+r)
+        mask = gray[y1:y2, x1:x2]
         _, m = cv2.threshold(mask, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         fill = cv2.countNonZero(m)
         # store fills per option
@@ -146,7 +162,8 @@ def process_folder(folder, out_csv="results.csv"):
             if not opt:
                 continue
             x, y = pos
-            cv2.circle(debug, (x, y), 30, (0, 0, 255), 2)
+            radius = int(BUBBLE_RADIUS or 30)
+            cv2.circle(debug, (x, y), radius, (0, 0, 255), 2)
         debug_name = os.path.splitext(fname)[0] + '_debug.png'
         cv2.imwrite(debug_name, debug)
     pd.DataFrame(rows).to_csv(out_csv, index=False)
