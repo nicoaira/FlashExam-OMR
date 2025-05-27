@@ -7,46 +7,47 @@ import os
 import json
 import subprocess
 
+# Default minimum fill threshold
+MIN_FILL = 200
+
 # Will load grid config and populate bubble_positions
+def set_min_fill(val):
+    global MIN_FILL
+    MIN_FILL = val
+
 def init_grid():
     import json
     cfg = json.load(open('grid_config.json'))
-    # Validate config format
     if 'grids' not in cfg and 'x_offsets' not in cfg:
         raise RuntimeError(
             "Invalid grid_config.json: missing grid definitions. "
             "Please regenerate using grid_setup_multi.py with --columns <num> --rows <num> --options <labels>."
         )
-    # Base warp size
     WARP_W = cfg['warp_w']; WARP_H = cfg['warp_h']
-    # Read options and rows
     OPTIONS = tuple(cfg['options'])
     ROWS = cfg['rows']
     bp = []
+    grid_bubble_params = []
     if 'grids' in cfg:
-        # Multi-grid mode: use calibrated spacing and radius
         grids = cfg['grids']
         COLS = len(grids)
-        spacing = cfg.get('bubble_spacing_px')
-        radius = cfg.get('bubble_radius_px')
         for col, g in enumerate(grids):
             x0, y0, w0, h0 = g['x'], g['y'], g['w'], g['h']
-            # convert normalized to pixels
+            spacing = g.get('bubble_spacing_px')
+            radius = g.get('bubble_radius_px')
             x0_px = x0 * WARP_W
             y0_px = y0 * WARP_H
             h0_px = h0 * WARP_H
+            grid_bubble_params.append({'spacing': spacing, 'radius': radius, 'x0_px': x0_px, 'y0_px': y0_px, 'h0_px': h0_px})
             for i in range(ROWS):
-                # row center y coordinate in px
                 y_px = y0_px + (i + 0.5) * (h0_px / ROWS)
                 for j, opt in enumerate(OPTIONS):
-                    # column center x coordinate in px: first bubble at x0_px+radius, then j*spacing
                     x_px = x0_px + (radius or 0) + j * (spacing or 0)
                     nx = x_px / WARP_W
                     ny = y_px / WARP_H
                     qnum = col * ROWS + i + 1
-                    bp.append((qnum, opt, (nx, ny)))
+                    bp.append((qnum, opt, (nx, ny), col))
     else:
-        # Legacy single-grid mode
         COLS = cfg.get('columns', cfg.get('cols'))
         x_offsets = cfg['x_offsets']
         y_start = cfg['y_start']; y_step = cfg['y_step']
@@ -57,18 +58,13 @@ def init_grid():
                 xs = np.linspace(x_offsets[col], x_offsets[col] + col_width, len(OPTIONS))
                 for j, x in enumerate(xs):
                     qnum = col * ROWS + i + 1
-                    bp.append((qnum, OPTIONS[j], (x, y)))
-    # Expose calibration values
-    spacing_val = cfg.get('bubble_spacing_px')
-    radius_val = cfg.get('bubble_radius_px')
-    # Export globals
+                    bp.append((qnum, OPTIONS[j], (x, y), col))
     globals().update({
         'WARP_W': WARP_W, 'WARP_H': WARP_H,
         'COLS': COLS, 'ROWS': ROWS,
         'OPTIONS': OPTIONS,
         'bubble_positions': bp,
-        'BUBBLE_SPACING': spacing_val,
-        'BUBBLE_RADIUS': radius_val
+        'grid_bubble_params': grid_bubble_params
     })
     return
 
@@ -113,34 +109,31 @@ def warp_sheet(img):
     M = cv2.getPerspectiveTransform(pts, dst)
     return cv2.warpPerspective(img, M, (WARP_W, WARP_H))
 
-MIN_FILL = 200  # minimum pixel count to consider a bubble filled, else blank
-
 def detect_answers(warped):
-    # Use template positions to compute fills
     gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
     answers = {}
-    for q, opt, (nx, ny) in bubble_positions:
+    for q, opt, (nx, ny), col in bubble_positions:
         x = int(nx * WARP_W)
         y = int(ny * WARP_H)
-        # crop around the bubble using calibrated radius (clamp to image)
-        r = int(BUBBLE_RADIUS or 20)
+        # Use per-grid radius if available
+        if 'grid_bubble_params' in globals() and col < len(grid_bubble_params):
+            r = int(grid_bubble_params[col]['radius'] or 20)
+        else:
+            r = 20
         y1 = max(0, y-r); y2 = min(WARP_H, y+r)
         x1 = max(0, x-r); x2 = min(WARP_W, x+r)
         mask = gray[y1:y2, x1:x2]
         _, m = cv2.threshold(mask, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         fill = cv2.countNonZero(m)
-        # store fills per option
         if q not in answers:
             answers[q] = []
-        answers[q].append((fill, opt, (x, y)))
-    # pick max fill per question
+        answers[q].append((fill, opt, (x, y), col))
     results = {}
     for q, lst in answers.items():
-        fill, opt, pos = max(lst, key=lambda x: x[0])
-        # if below threshold, leave blank
+        fill, opt, pos, col = max(lst, key=lambda x: x[0])
         if fill < MIN_FILL:
             opt = ""
-        results[q] = (opt, pos)
+        results[q] = (opt, pos, col)
     return results
 
 def process_folder(folder, out_csv="results.csv"):
@@ -148,21 +141,22 @@ def process_folder(folder, out_csv="results.csv"):
     for fname in glob.glob(os.path.join(folder, "*.png")):
         img = cv2.imread(fname)
         warped = warp_sheet(img)
-        results = detect_answers(warped)  # returns {q: (opt, pos)}
-        # split into answers and positions
-        ans = {q: opt for q, (opt, pos) in results.items()}
-        positions = {q: pos for q, (opt, pos) in results.items()}
+        results = detect_answers(warped)  # returns {q: (opt, pos, col)}
+        ans = {q: opt for q, (opt, pos, col) in results.items()}
+        positions = {q: pos for q, (opt, pos, col) in results.items()}
         row = {"file": os.path.basename(fname)}
         row.update({f"Q{q}": ans[q] for q in sorted(ans)})
         rows.append(row)
-        # draw a circle around the chosen bubble for each question using template positions
         debug = warped.copy()
-        for q, (opt, pos) in results.items():
-            # only draw for answered bubbles
+        for q, (opt, pos, col) in results.items():
             if not opt:
                 continue
             x, y = pos
-            radius = int(BUBBLE_RADIUS or 30)
+            # Use per-grid radius for debug circle
+            if 'grid_bubble_params' in globals() and col < len(grid_bubble_params):
+                radius = int(grid_bubble_params[col]['radius'] or 30)
+            else:
+                radius = 30
             cv2.circle(debug, (x, y), radius, (0, 0, 255), 2)
         debug_name = os.path.splitext(fname)[0] + '_debug.png'
         cv2.imwrite(debug_name, debug)
@@ -174,7 +168,9 @@ if __name__=="__main__":
     p = argparse.ArgumentParser()
     p.add_argument("input_folder", help="folder with scanned .png sheets")
     p.add_argument("--csv", default="results.csv")
+    p.add_argument("--min-fill", type=int, default=200, help="Minimum fill threshold for answer detection (default: 200)")
     args = p.parse_args()
+    set_min_fill(args.min_fill)
     # If grid not configured, launch interactive setup
     if not os.path.exists('grid_config.json'):
         print('grid_config.json not found; launching grid setup GUI...')
