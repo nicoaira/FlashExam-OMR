@@ -99,6 +99,8 @@ def warp_sheet(img):
     M = cv2.getPerspectiveTransform(pts, dst)
     return cv2.warpPerspective(img, M, (WARP_W, WARP_H))
 
+MIN_FILL = 200  # minimum pixel count to consider a bubble filled, else blank
+
 def detect_answers(warped):
     # Use template positions to compute fills
     gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
@@ -119,6 +121,9 @@ def detect_answers(warped):
     results = {}
     for q, lst in answers.items():
         fill, opt, pos = max(lst, key=lambda x: x[0])
+        # if below threshold, leave blank
+        if fill < MIN_FILL:
+            opt = ""
         results[q] = (opt, pos)
     return results
 
@@ -137,6 +142,9 @@ def process_folder(folder, out_csv="results.csv"):
         # draw a circle around the chosen bubble for each question using template positions
         debug = warped.copy()
         for q, (opt, pos) in results.items():
+            # only draw for answered bubbles
+            if not opt:
+                continue
             x, y = pos
             cv2.circle(debug, (x, y), 30, (0, 0, 255), 2)
         debug_name = os.path.splitext(fname)[0] + '_debug.png'
