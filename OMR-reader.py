@@ -216,10 +216,18 @@ def process_folder(folder, out_csv="results.csv", output_dir="output", answers_c
                 total_score += score
                 # Draw only for answered
                 if opt:
+                    # Draw filled circle with 90% transparency
+                    overlay = debug.copy()
+                    cv2.circle(overlay, (x, y), radius, color, -1)
+                    cv2.addWeighted(overlay, 0.25, debug, 0.75, 0, debug)
+                    # Draw circumference
                     cv2.circle(debug, (x, y), radius, color, 2)
             else:
                 # No correct answers provided: just draw red for answered
                 if opt:
+                    overlay = debug.copy()
+                    cv2.circle(overlay, (x, y), radius, (0, 0, 255), -1)
+                    cv2.addWeighted(overlay, 0.25, debug, 0.75, 0, debug)
                     cv2.circle(debug, (x, y), radius, (0, 0, 255), 2)
             grades_row[f"Q{q}"] = grade_mark
         if correct_answers:
