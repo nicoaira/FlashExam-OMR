@@ -17,11 +17,12 @@ def generate_pdf(students_info_dir, output_pdf):
     img_disp_width = 220  # Display width in points (not pixels)
     font_size = 12
     c.setFont("Helvetica", font_size)
+    # Prepare for CSV template
+    csv_rows = []
     for student in student_dirs:
         student_path = os.path.join(students_info_dir, student)
         name_img_path = os.path.join(student_path, "name.png")
         id_img_path = os.path.join(student_path, "id.png")
-        # Only add if both images exist
         if not (os.path.exists(name_img_path) and os.path.exists(id_img_path)):
             continue
         # Draw filename
@@ -54,6 +55,7 @@ def generate_pdf(students_info_dir, output_pdf):
             c.drawImage(ImageReader(id_img), x_offset, y_offset, width=draw_w, height=draw_h, preserveAspectRatio=True, mask='auto')
         except Exception as e:
             pass
+        csv_rows.append({"image": student, "name": "", "id": ""})
         y -= row_height
         if y < margin + row_height:
             c.showPage()
@@ -61,6 +63,15 @@ def generate_pdf(students_info_dir, output_pdf):
             y = height - margin
     c.save()
     print(f"PDF saved to {output_pdf}")
+    # Write CSV template in the same directory as the PDF
+    import csv
+    output_dir = os.path.dirname(output_pdf)
+    csv_path = os.path.join(output_dir, "image-to-name.csv")
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["image", "name", "id"])
+        writer.writeheader()
+        writer.writerows(csv_rows)
+    print(f"CSV template saved to {csv_path}")
 
 if __name__ == "__main__":
     import sys
