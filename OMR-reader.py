@@ -164,7 +164,7 @@ def detect_answers(warped):
         results[q] = (opt, pos, col)
     return results
 
-def process_folder(folder, out_csv="results.csv", output_dir="output", answers_csv=None, scoring_json=None, get_info=False, device='cpu'):
+def process_folder(folder, out_csv="results.csv", output_dir="output", answers_csv=None, answers_json=None, scoring_json=None, get_info=False, hand_writing=False, device='cpu'):
     os.makedirs(output_dir, exist_ok=True)
     detections_dir = os.path.join(output_dir, "detections")
     os.makedirs(detections_dir, exist_ok=True)
@@ -173,7 +173,8 @@ def process_folder(folder, out_csv="results.csv", output_dir="output", answers_c
     os.makedirs(students_info_dir, exist_ok=True)
     # For info.csv
     info_rows = []
-    if get_info:
+    handwriting_ocr = None
+    if hand_writing:
         handwriting_ocr = importlib.import_module('handwriting_ocr')
     # Load name/id rects from config
     with open('grid_config.json') as f:
@@ -184,7 +185,12 @@ def process_folder(folder, out_csv="results.csv", output_dir="output", answers_c
     grades_rows = []
     # Load correct answers if provided
     correct_answers = None
-    if answers_csv:
+    if answers_json:
+        with open(answers_json) as f:
+            correct_answers = json.load(f)
+        # Ensure all keys are int
+        correct_answers = {int(k): v for k, v in correct_answers.items()}
+    elif answers_csv:
         correct_answers = {}
         with open(answers_csv, newline='') as f:
             reader = csvmod.DictReader(f)
@@ -207,14 +213,36 @@ def process_folder(folder, out_csv="results.csv", output_dir="output", answers_c
         for label, rect in zip(["name", "id"], [name_rect, id_rect]):
             if rect:
                 x, y, w, h = rect
-                x1 = int(x * warped.shape[1])
-                y1 = int(y * warped.shape[0])
-                x2 = int((x + w) * warped.shape[1])
-                y2 = int((y + h) * warped.shape[0])
-                crop = warped[y1:y2, x1:x2]
+                # Map rect from warped to original image using inverse perspective transform
+                pts = find_markers(img)
+                dst = np.array([[0,0],[WARP_W,0],[WARP_W,WARP_H],[0,WARP_H]], dtype="float32")
+                M = cv2.getPerspectiveTransform(pts, dst)
+                Minv = cv2.getPerspectiveTransform(dst, pts)
+                # Rectangle in warped image
+                x1w = int(x * WARP_W)
+                y1w = int(y * WARP_H)
+                x2w = int((x + w) * WARP_W)
+                y2w = int((y + h) * WARP_H)
+                # Four corners in warped
+                warped_corners = np.array([
+                    [x1w, y1w],
+                    [x2w, y1w],
+                    [x2w, y2w],
+                    [x1w, y2w]
+                ], dtype="float32").reshape(-1,1,2)
+                # Map to original image
+                orig_corners = cv2.perspectiveTransform(warped_corners, Minv).reshape(4,2)
+                # Get bounding box in original image
+                x_min, y_min = orig_corners.min(axis=0).astype(int)
+                x_max, y_max = orig_corners.max(axis=0).astype(int)
+                x_min = max(0, x_min)
+                y_min = max(0, y_min)
+                x_max = min(img.shape[1], x_max)
+                y_max = min(img.shape[0], y_max)
+                crop = img[y_min:y_max, x_min:x_max]
                 cv2.imwrite(os.path.join(student_dir, f"{label}.png"), crop)
         # OCR if enabled
-        if get_info:
+        if hand_writing:
             name_img = os.path.join(student_dir, "name.png")
             id_img = os.path.join(student_dir, "id.png")
             name_text, id_text = handwriting_ocr.recognize_name_id(name_img, id_img, device=device)
@@ -242,10 +270,12 @@ def process_folder(folder, out_csv="results.csv", output_dir="output", answers_c
             grade_mark = '-'
             if correct_answers and q in correct_answers:
                 correct = correct_answers[q]
-                if opt == '-':
+                # Support multiple correct answers (comma or semicolon separated)
+                correct_opts = [c.strip().upper() for c in correct.replace(';', ',').split(',')]
+                if opt == '-' or not opt:
                     color = (128, 128, 128)  # gray (no circle)
                     score = scoring.get('unanswered', 0)
-                elif opt == correct:
+                elif opt in correct_opts:
                     color = (0, 200, 0)  # green
                     grade_mark = '+'
                     score = scoring.get('correct', 1)
@@ -297,13 +327,21 @@ def process_folder(folder, out_csv="results.csv", output_dir="output", answers_c
                 writer.writerow(row)
         print(f"Saved grades to {grades_csv_path}")
     # Save info.csv if needed
-    if get_info and info_rows:
+    if hand_writing and info_rows:
         info_csv_path = os.path.join(students_info_dir, "info.csv")
         with open(info_csv_path, "w", newline="") as f:
             writer = csvmod.DictWriter(f, fieldnames=["image", "name", "id"])
             writer.writeheader()
             writer.writerows(info_rows)
         print(f"Saved handwriting info to {info_csv_path}")
+    # Generate PDF with crops and filenames if get_info is set
+    if get_info:
+        try:
+            from generate_students_info_pdf import generate_pdf
+            output_pdf = os.path.join(output_dir, "image-to-names.pdf")
+            generate_pdf(students_info_dir, output_pdf)
+        except Exception as e:
+            print(f"[WARN] Could not generate PDF: {e}")
 
 if __name__=="__main__":
     import argparse
@@ -313,8 +351,10 @@ if __name__=="__main__":
     p.add_argument("--min-fill", type=int, default=200, help="Minimum fill threshold for answer detection (default: 200)")
     p.add_argument("--output", default="output", help="Output directory for results and detections (default: output)")
     p.add_argument("--answers-csv", help="CSV file with correct answers (Pregunta,Respuesta)")
+    p.add_argument("--answers-json", help="JSON file with correct answers, e.g. {'1':'A','2':'A,D'}")
     p.add_argument("--scoring-json", help="JSON file with scoring for correct/incorrect/unanswered")
-    p.add_argument("--get-info", action="store_true", help="Enable handwriting OCR for name/id fields")
+    p.add_argument("--get-info", action="store_true", help="Crop and save name/id fields and generate PDF (no OCR)")
+    p.add_argument("--hand-writing", action="store_true", help="Enable handwriting OCR for name/id fields and generate info.csv")
     p.add_argument("--device", default="cpu", choices=["cpu", "cuda"], help="Device for OCR model (cpu or cuda)")
     p.add_argument("--debug", type=int, default=1, choices=[0,1,2], help="Debug level: 0=none, 1=all except bubble fill, 2=all")
     args = p.parse_args()
@@ -339,4 +379,4 @@ if __name__=="__main__":
         sys.exit(0)
     # Load grid configuration and bubble positions
     init_grid()
-    process_folder(args.input_folder, args.csv, args.output, args.answers_csv, args.scoring_json, get_info=args.get_info, device=args.device)
+    process_folder(args.input_folder, args.csv, args.output, args.answers_csv, args.answers_json, args.scoring_json, get_info=args.get_info, hand_writing=args.hand_writing, device=args.device)
