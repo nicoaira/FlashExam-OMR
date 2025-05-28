@@ -3,3 +3,4 @@ exams/*
 output/*
 output/detections/*
 output/results.csv
+OMR-reader.py

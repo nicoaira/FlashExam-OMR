@@ -6,7 +6,8 @@ import glob
 import os
 import json
 import subprocess
-import csv
+import csv as csvmod
+import importlib
 
 # Default minimum fill threshold
 MIN_FILL = 200
@@ -155,13 +156,17 @@ def detect_answers(warped):
         results[q] = (opt, pos, col)
     return results
 
-def process_folder(folder, out_csv="results.csv", output_dir="output", answers_csv=None, scoring_json=None):
+def process_folder(folder, out_csv="results.csv", output_dir="output", answers_csv=None, scoring_json=None, get_info=False, device='cpu'):
     os.makedirs(output_dir, exist_ok=True)
     detections_dir = os.path.join(output_dir, "detections")
     os.makedirs(detections_dir, exist_ok=True)
     # --- Create students-info dir ---
     students_info_dir = os.path.join(output_dir, "students-info")
     os.makedirs(students_info_dir, exist_ok=True)
+    # For info.csv
+    info_rows = []
+    if get_info:
+        handwriting_ocr = importlib.import_module('handwriting_ocr')
     # Load name/id rects from config
     with open('grid_config.json') as f:
         grid_cfg = json.load(f)
@@ -174,7 +179,7 @@ def process_folder(folder, out_csv="results.csv", output_dir="output", answers_c
     if answers_csv:
         correct_answers = {}
         with open(answers_csv, newline='') as f:
-            reader = csv.DictReader(f)
+            reader = csvmod.DictReader(f)
             for row in reader:
                 q = int(row['Pregunta'])
                 correct_answers[q] = row['Respuesta'].strip().upper()
@@ -200,6 +205,12 @@ def process_folder(folder, out_csv="results.csv", output_dir="output", answers_c
                 y2 = int((y + h) * warped.shape[0])
                 crop = warped[y1:y2, x1:x2]
                 cv2.imwrite(os.path.join(student_dir, f"{label}.png"), crop)
+        # OCR if enabled
+        if get_info:
+            name_img = os.path.join(student_dir, "name.png")
+            id_img = os.path.join(student_dir, "id.png")
+            name_text, id_text = handwriting_ocr.recognize_name_id(name_img, id_img, device=device)
+            info_rows.append({"image": os.path.basename(fname), "name": name_text, "id": id_text})
         results = detect_answers(warped)  # returns {q: (opt, pos, col)}
         # Use '-' for unanswered questions
         ans = {q: (opt if opt else '-') for q, (opt, pos, col) in results.items()}
@@ -269,7 +280,7 @@ def process_folder(folder, out_csv="results.csv", output_dir="output", answers_c
         cols = ['file'] + all_qs + ['grade']
         grades_csv_path = os.path.join(output_dir, 'grades.csv')
         with open(grades_csv_path, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=cols)
+            writer = csvmod.DictWriter(f, fieldnames=cols)
             writer.writeheader()
             for row in grades_rows:
                 for q in all_qs:
@@ -277,6 +288,14 @@ def process_folder(folder, out_csv="results.csv", output_dir="output", answers_c
                         row[q] = '-'
                 writer.writerow(row)
         print(f"Saved grades to {grades_csv_path}")
+    # Save info.csv if needed
+    if get_info and info_rows:
+        info_csv_path = os.path.join(students_info_dir, "info.csv")
+        with open(info_csv_path, "w", newline="") as f:
+            writer = csvmod.DictWriter(f, fieldnames=["image", "name", "id"])
+            writer.writeheader()
+            writer.writerows(info_rows)
+        print(f"Saved handwriting info to {info_csv_path}")
 
 if __name__=="__main__":
     import argparse
@@ -287,6 +306,8 @@ if __name__=="__main__":
     p.add_argument("--output", default="output", help="Output directory for results and detections (default: output)")
     p.add_argument("--answers-csv", help="CSV file with correct answers (Pregunta,Respuesta)")
     p.add_argument("--scoring-json", help="JSON file with scoring for correct/incorrect/unanswered")
+    p.add_argument("--get-info", action="store_true", help="Enable handwriting OCR for name/id fields")
+    p.add_argument("--device", default="cpu", choices=["cpu", "cuda"], help="Device for OCR model (cpu or cuda)")
     args = p.parse_args()
     MIN_FILL = args.min_fill
     if not os.path.exists(args.input_folder):
@@ -308,4 +329,4 @@ if __name__=="__main__":
         sys.exit(0)
     # Load grid configuration and bubble positions
     init_grid()
-    process_folder(args.input_folder, args.csv, args.output, args.answers_csv, args.scoring_json)
+    process_folder(args.input_folder, args.csv, args.output, args.answers_csv, args.scoring_json, get_info=args.get_info, device=args.device)
