@@ -159,6 +159,14 @@ def process_folder(folder, out_csv="results.csv", output_dir="output", answers_c
     os.makedirs(output_dir, exist_ok=True)
     detections_dir = os.path.join(output_dir, "detections")
     os.makedirs(detections_dir, exist_ok=True)
+    # --- Create students-info dir ---
+    students_info_dir = os.path.join(output_dir, "students-info")
+    os.makedirs(students_info_dir, exist_ok=True)
+    # Load name/id rects from config
+    with open('grid_config.json') as f:
+        grid_cfg = json.load(f)
+    name_rect = grid_cfg.get('name_rect')
+    id_rect = grid_cfg.get('id_rect')
     rows = []
     grades_rows = []
     # Load correct answers if provided
@@ -179,6 +187,19 @@ def process_folder(folder, out_csv="results.csv", output_dir="output", answers_c
         print(f"Processing image {os.path.basename(fname)}...")
         img = cv2.imread(fname)
         warped = warp_sheet(img)
+        # --- Crop and save name/id regions ---
+        base = os.path.splitext(os.path.basename(fname))[0]
+        student_dir = os.path.join(students_info_dir, base)
+        os.makedirs(student_dir, exist_ok=True)
+        for label, rect in zip(["name", "id"], [name_rect, id_rect]):
+            if rect:
+                x, y, w, h = rect
+                x1 = int(x * warped.shape[1])
+                y1 = int(y * warped.shape[0])
+                x2 = int((x + w) * warped.shape[1])
+                y2 = int((y + h) * warped.shape[0])
+                crop = warped[y1:y2, x1:x2]
+                cv2.imwrite(os.path.join(student_dir, f"{label}.png"), crop)
         results = detect_answers(warped)  # returns {q: (opt, pos, col)}
         # Use '-' for unanswered questions
         ans = {q: (opt if opt else '-') for q, (opt, pos, col) in results.items()}

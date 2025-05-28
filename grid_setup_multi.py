@@ -62,6 +62,25 @@ if __name__=='__main__':
               'grids': []}
     window = 'Grid setup: g=add grid, q=finish'
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window, min(warp.shape[1], 1200), min(warp.shape[0], 800))
+    # --- Step 0: Select name and ID rectangles ---
+    rect_labels = ["name_rect", "id_rect"]
+    rects = {}
+    for label in rect_labels:
+        print(f"Select the rectangle for {label.replace('_rect','').upper()} (drag to select, ENTER to confirm)")
+        roi_win = f"Select {label}"
+        cv2.namedWindow(roi_win, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(roi_win, min(warp.shape[1], 1200), min(warp.shape[0], 800))
+        r = cv2.selectROI(roi_win, warp, showCrosshair=True, fromCenter=False)
+        cv2.destroyWindow(roi_win)
+        x, y, w, h = [int(v) for v in r]
+        if w == 0 or h == 0:
+            print(f"No selection made for {label}"); sys.exit(1)
+        # Normalize
+        rects[label] = [x/W, y/H, w/W, h/H]
+    config['name_rect'] = rects['name_rect']
+    config['id_rect'] = rects['id_rect']
+
     for grid_idx in range(args.columns):
         # 1. Calibrate bubble for this grid
         while True:
