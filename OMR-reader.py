@@ -6,6 +6,7 @@ import glob
 import os
 import json
 import subprocess
+import csv
 
 # Default minimum fill threshold
 MIN_FILL = 200
@@ -125,6 +126,8 @@ def detect_answers(warped):
         mask = gray[y1:y2, x1:x2]
         _, m = cv2.threshold(mask, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         fill = cv2.countNonZero(m)
+        # Debug: print fill value for each bubble
+        print(f"Q{q} Opt:{opt} Fill:{fill} (min_fill={MIN_FILL})")
         if q not in answers:
             answers[q] = []
         answers[q].append((fill, opt, (x, y), col))
@@ -132,15 +135,33 @@ def detect_answers(warped):
     for q, lst in answers.items():
         fill, opt, pos, col = max(lst, key=lambda x: x[0])
         if fill < MIN_FILL:
+            print(f"Q{q} selected: - (no bubble above threshold, max fill={fill})")
             opt = ""
+        else:
+            print(f"Q{q} selected: {opt} (fill={fill})")
         results[q] = (opt, pos, col)
     return results
 
-def process_folder(folder, out_csv="results.csv", output_dir="output"):
+def process_folder(folder, out_csv="results.csv", output_dir="output", answers_csv=None, scoring_json=None):
     os.makedirs(output_dir, exist_ok=True)
     detections_dir = os.path.join(output_dir, "detections")
     os.makedirs(detections_dir, exist_ok=True)
     rows = []
+    grades_rows = []
+    # Load correct answers if provided
+    correct_answers = None
+    if answers_csv:
+        correct_answers = {}
+        with open(answers_csv, newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                q = int(row['Pregunta'])
+                correct_answers[q] = row['Respuesta'].strip().upper()
+    # Load scoring if provided
+    scoring = {"correct": 1, "incorrect": 0, "unanswered": 0}
+    if scoring_json:
+        with open(scoring_json) as f:
+            scoring.update(json.load(f))
     for fname in glob.glob(os.path.join(folder, "*.png")):
         img = cv2.imread(fname)
         warped = warp_sheet(img)
@@ -152,16 +173,44 @@ def process_folder(folder, out_csv="results.csv", output_dir="output"):
         row.update({f"Q{q}": ans[q] for q in sorted(ans)})
         rows.append(row)
         debug = warped.copy()
+        # For grades
+        grades_row = {"file": os.path.basename(fname)}
+        total_score = 0
+        # Draw circles and compute grades if correct_answers is provided
         for q, (opt, pos, col) in results.items():
-            if not opt:
-                continue
             x, y = pos
             # Use per-grid radius for debug circle
             if 'grid_bubble_params' in globals() and col < len(grid_bubble_params):
                 radius = int(grid_bubble_params[col]['radius'] or 30)
             else:
                 radius = 30
-            cv2.circle(debug, (x, y), radius, (0, 0, 255), 2)
+            # Default: unanswered
+            grade_mark = '-'
+            if correct_answers and q in correct_answers:
+                correct = correct_answers[q]
+                if opt == '-':
+                    color = (128, 128, 128)  # gray (no circle)
+                    score = scoring.get('unanswered', 0)
+                elif opt == correct:
+                    color = (0, 200, 0)  # green
+                    grade_mark = '+'
+                    score = scoring.get('correct', 1)
+                else:
+                    color = (0, 0, 255)  # red
+                    grade_mark = '-'
+                    score = scoring.get('incorrect', 0)
+                total_score += score
+                # Draw only for answered
+                if opt:
+                    cv2.circle(debug, (x, y), radius, color, 2)
+            else:
+                # No correct answers provided: just draw red for answered
+                if opt:
+                    cv2.circle(debug, (x, y), radius, (0, 0, 255), 2)
+            grades_row[f"Q{q}"] = grade_mark
+        if correct_answers:
+            grades_row['grade'] = total_score
+            grades_rows.append(grades_row)
         # Save detection image in detections folder with _detections.png suffix
         base = os.path.splitext(os.path.basename(fname))[0]
         debug_name = os.path.join(detections_dir, f"{base}_detections.png")
@@ -171,6 +220,21 @@ def process_folder(folder, out_csv="results.csv", output_dir="output"):
     pd.DataFrame(rows).to_csv(csv_path, index=False)
     print(f"Saved results to {csv_path}")
 
+    # Save grades.csv if grading was done
+    if grades_rows:
+        all_qs = sorted({k for row in grades_rows for k in row if k.startswith('Q')})
+        cols = ['file'] + all_qs + ['grade']
+        grades_csv_path = os.path.join(output_dir, 'grades.csv')
+        with open(grades_csv_path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=cols)
+            writer.writeheader()
+            for row in grades_rows:
+                for q in all_qs:
+                    if q not in row:
+                        row[q] = '-'
+                writer.writerow(row)
+        print(f"Saved grades to {grades_csv_path}")
+
 if __name__=="__main__":
     import argparse
     p = argparse.ArgumentParser()
@@ -178,6 +242,8 @@ if __name__=="__main__":
     p.add_argument("--csv", default="results.csv")
     p.add_argument("--min-fill", type=int, default=200, help="Minimum fill threshold for answer detection (default: 200)")
     p.add_argument("--output", default="output", help="Output directory for results and detections (default: output)")
+    p.add_argument("--answers-csv", help="CSV file with correct answers (Pregunta,Respuesta)")
+    p.add_argument("--scoring-json", help="JSON file with scoring for correct/incorrect/unanswered")
     args = p.parse_args()
     MIN_FILL = args.min_fill
     if not os.path.exists(args.input_folder):
@@ -199,4 +265,4 @@ if __name__=="__main__":
         sys.exit(0)
     # Load grid configuration and bubble positions
     init_grid()
-    process_folder(args.input_folder, args.csv)
+    process_folder(args.input_folder, args.csv, args.output, args.answers_csv, args.scoring_json)
