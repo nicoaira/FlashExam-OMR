@@ -10,6 +10,7 @@ import csv
 
 # Default minimum fill threshold
 MIN_FILL = 200
+DEBUG = False
 
 # Will load grid config and populate bubble_positions
 def set_min_fill(val):
@@ -76,32 +77,38 @@ def find_markers(img):
     _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
     cnts, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    print(f"[DEBUG] Total contours found: {len(cnts)}")
     squares = []
-    for c in cnts:
+    for idx, c in enumerate(cnts):
         area = cv2.contourArea(c)
-        if area < 2000:                 # ignore tiny blobs
+        x, y, w, h = cv2.boundingRect(c)
+        print(f"[DEBUG] Contour {idx}: area={area}, bbox=({x},{y},{w},{h})")
+        if area < 2000:
             continue
         peri = cv2.arcLength(c, True)
         approx = cv2.approxPolyDP(c, 0.02 * peri, True)
         if len(approx) == 4:
-            x, y, w, h = cv2.boundingRect(approx)
             ratio = w / float(h)
-            if 0.8 <= ratio <= 1.2:    # roughly square
+            print(f"[DEBUG] Contour {idx} is quadrilateral, ratio={ratio}")
+            if 0.8 <= ratio <= 1.2:
                 cx, cy = x + w/2, y + h/2
                 squares.append((cx, cy))
-
+                print(f"[DEBUG] Contour {idx} accepted as marker at ({cx},{cy})")
+    print(f"[DEBUG] Total markers found: {len(squares)}")
     if len(squares) != 4:
         # dump threshold image for inspection
         cv2.imwrite("debug_markers.png", th)
+        print(f"[DEBUG] Could not find 4 markers, found {len(squares)} – see debug_markers.png")
         raise RuntimeError(f"Could not find 4 markers, found {len(squares)} – see debug_markers.png")
-
-    # sort into tl, tr, br, bl
-    squares = sorted(squares, key=lambda p: (p[1], p[0]))
-    tl, tr = squares[:2]
-    bl, br = squares[2:]
-    if bl[0] > br[0]:
-        bl, br = br, bl
-
+    # Robust order: top-left, top-right, bottom-right, bottom-left
+    pts = np.array(squares, dtype="float32")
+    s = pts.sum(axis=1)
+    diff = np.diff(pts, axis=1)
+    tl = pts[np.argmin(s)]
+    br = pts[np.argmax(s)]
+    tr = pts[np.argmin(diff)]
+    bl = pts[np.argmax(diff)]
+    print(f"[DEBUG] Marker coordinates: tl={tl}, tr={tr}, br={br}, bl={bl}")
     return np.array([tl, tr, br, bl], dtype="float32")
 
 def warp_sheet(img):
@@ -135,10 +142,16 @@ def detect_answers(warped):
     for q, lst in answers.items():
         fill, opt, pos, col = max(lst, key=lambda x: x[0])
         if fill < MIN_FILL:
-            print(f"Q{q} selected: - (no bubble above threshold, max fill={fill})")
+            if DEBUG:
+                print(f"Q{q} selected: - (no bubble above threshold, max fill={fill})")
+            else:
+                pass
             opt = ""
         else:
-            print(f"Q{q} selected: {opt} (fill={fill})")
+            if DEBUG:
+                print(f"Q{q} selected: {opt} (fill={fill})")
+            else:
+                pass
         results[q] = (opt, pos, col)
     return results
 
@@ -163,6 +176,7 @@ def process_folder(folder, out_csv="results.csv", output_dir="output", answers_c
         with open(scoring_json) as f:
             scoring.update(json.load(f))
     for fname in glob.glob(os.path.join(folder, "*.png")):
+        print(f"Processing image {os.path.basename(fname)}...")
         img = cv2.imread(fname)
         warped = warp_sheet(img)
         results = detect_answers(warped)  # returns {q: (opt, pos, col)}
