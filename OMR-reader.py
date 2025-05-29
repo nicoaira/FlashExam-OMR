@@ -248,8 +248,8 @@ def process_folder(folder, out_csv="results.csv", output_dir="output", answers_c
             name_text, id_text = handwriting_ocr.recognize_name_id(name_img, id_img, device=device)
             info_rows.append({"image": os.path.basename(fname), "name": name_text, "id": id_text})
         results = detect_answers(warped)  # returns {q: (opt, pos, col)}
-        # Use '-' for unanswered questions
-        ans = {q: (opt if opt else '-') for q, (opt, pos, col) in results.items()}
+        # Use blank ('') for unanswered questions
+        ans = {q: (opt if opt else '') for q, (opt, pos, col) in results.items()}
         positions = {q: pos for q, (opt, pos, col) in results.items()}
         row = {"file": os.path.basename(fname)}
         row.update({f"Q{q}": ans[q] for q in sorted(ans)})
