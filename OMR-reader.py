@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # core dependencies
 import cv2
 import numpy as np
@@ -102,12 +103,10 @@ def find_markers(img):
     if DEBUG >= 1:
         print(f"[DEBUG] Total markers found: {len(squares)}")
     if len(squares) != 4:
-        # dump threshold image for inspection
         cv2.imwrite("debug_markers.png", th)
         if DEBUG >= 1:
             print(f"[DEBUG] Could not find 4 markers, found {len(squares)} – see debug_markers.png")
         raise RuntimeError(f"Could not find 4 markers, found {len(squares)} – see debug_markers.png")
-    # Robust order: top-left, top-right, bottom-right, bottom-left
     pts = np.array(squares, dtype="float32")
     s = pts.sum(axis=1)
     diff = np.diff(pts, axis=1)
@@ -131,7 +130,6 @@ def detect_answers(warped):
     for q, opt, (nx, ny), col in bubble_positions:
         x = int(nx * WARP_W)
         y = int(ny * WARP_H)
-        # Use per-grid radius if available
         if 'grid_bubble_params' in globals() and col < len(grid_bubble_params):
             r = int(grid_bubble_params[col]['radius'] or 20)
         else:
@@ -141,7 +139,6 @@ def detect_answers(warped):
         mask = gray[y1:y2, x1:x2]
         _, m = cv2.threshold(mask, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         fill = cv2.countNonZero(m)
-        # Debug: print fill value for each bubble only if DEBUG==2
         if DEBUG == 2:
             print(f"Q{q} Opt:{opt} Fill:{fill} (min_fill={MIN_FILL})")
         if q not in answers:
@@ -164,31 +161,32 @@ def detect_answers(warped):
         results[q] = (opt, pos, col)
     return results
 
-def process_folder(folder, out_csv="results.csv", output_dir="output", answers_csv=None, answers_json=None, scoring_json=None, get_info=False, hand_writing=False, device='cpu'):
+def process_folder(folder, out_csv="results.csv", output_dir="output",
+                   answers_csv=None, answers_json=None, scoring_json=None,
+                   get_info=False, hand_writing=False, device='cpu'):
     os.makedirs(output_dir, exist_ok=True)
     detections_dir = os.path.join(output_dir, "detections")
     os.makedirs(detections_dir, exist_ok=True)
-    # --- Create students-info dir ---
     students_info_dir = os.path.join(output_dir, "students-info")
     os.makedirs(students_info_dir, exist_ok=True)
-    # For info.csv
+
     info_rows = []
     handwriting_ocr = None
     if hand_writing:
         handwriting_ocr = importlib.import_module('handwriting_ocr')
-    # Load name/id rects from config
+
     with open('grid_config.json') as f:
         grid_cfg = json.load(f)
     name_rect = grid_cfg.get('name_rect')
     id_rect = grid_cfg.get('id_rect')
+
     rows = []
     grades_rows = []
-    # Load correct answers if provided
+
     correct_answers = None
     if answers_json:
         with open(answers_json) as f:
             correct_answers = json.load(f)
-        # Ensure all keys are int
         correct_answers = {int(k): v for k, v in correct_answers.items()}
     elif answers_csv:
         correct_answers = {}
@@ -197,122 +195,111 @@ def process_folder(folder, out_csv="results.csv", output_dir="output", answers_c
             for row in reader:
                 q = int(row['Pregunta'])
                 correct_answers[q] = row['Respuesta'].strip().upper()
-    # Load scoring if provided
+
     scoring = {"correct": 1, "incorrect": 0, "unanswered": 0}
     if scoring_json:
         with open(scoring_json) as f:
             scoring.update(json.load(f))
+
     for fname in glob.glob(os.path.join(folder, "*.png")):
         print(f"Processing image {os.path.basename(fname)}...")
         img = cv2.imread(fname)
         warped = warp_sheet(img)
-        # --- Crop and save name/id regions ---
+
         base = os.path.splitext(os.path.basename(fname))[0]
         student_dir = os.path.join(students_info_dir, base)
         os.makedirs(student_dir, exist_ok=True)
         for label, rect in zip(["name", "id"], [name_rect, id_rect]):
             if rect:
                 x, y, w, h = rect
-                # Map rect from warped to original image using inverse perspective transform
                 pts = find_markers(img)
                 dst = np.array([[0,0],[WARP_W,0],[WARP_W,WARP_H],[0,WARP_H]], dtype="float32")
                 M = cv2.getPerspectiveTransform(pts, dst)
                 Minv = cv2.getPerspectiveTransform(dst, pts)
-                # Rectangle in warped image
                 x1w = int(x * WARP_W)
                 y1w = int(y * WARP_H)
                 x2w = int((x + w) * WARP_W)
                 y2w = int((y + h) * WARP_H)
-                # Four corners in warped
                 warped_corners = np.array([
                     [x1w, y1w],
                     [x2w, y1w],
                     [x2w, y2w],
                     [x1w, y2w]
                 ], dtype="float32").reshape(-1,1,2)
-                # Map to original image
                 orig_corners = cv2.perspectiveTransform(warped_corners, Minv).reshape(4,2)
-                # Get bounding box in original image
                 x_min, y_min = orig_corners.min(axis=0).astype(int)
                 x_max, y_max = orig_corners.max(axis=0).astype(int)
-                x_min = max(0, x_min)
-                y_min = max(0, y_min)
-                x_max = min(img.shape[1], x_max)
-                y_max = min(img.shape[0], y_max)
+                x_min = max(0, x_min); y_min = max(0, y_min)
+                x_max = min(img.shape[1], x_max); y_max = min(img.shape[0], y_max)
                 crop = img[y_min:y_max, x_min:x_max]
                 cv2.imwrite(os.path.join(student_dir, f"{label}.png"), crop)
-        # OCR if enabled
+
         if hand_writing:
             name_img = os.path.join(student_dir, "name.png")
             id_img = os.path.join(student_dir, "id.png")
             name_text, id_text = handwriting_ocr.recognize_name_id(name_img, id_img, device=device)
             info_rows.append({"image": os.path.basename(fname), "name": name_text, "id": id_text})
-        results = detect_answers(warped)  # returns {q: (opt, pos, col)}
-        # Use blank ('') for unanswered questions
-        ans = {q: (opt if opt else '') for q, (opt, pos, col) in results.items()}
+
+        results = detect_answers(warped)
+        ans = {q: (opt or '') for q, (opt, pos, col) in results.items()}
         positions = {q: pos for q, (opt, pos, col) in results.items()}
         row = {"file": os.path.basename(fname)}
         row.update({f"Q{q}": ans[q] for q in sorted(ans)})
         rows.append(row)
+
         debug = warped.copy()
-        # For grades
         grades_row = {"file": os.path.basename(fname)}
         total_score = 0
-        # Draw circles and compute grades if correct_answers is provided
+
         for q, (opt, pos, col) in results.items():
             x, y = pos
-            # Use per-grid radius for debug circle
             if 'grid_bubble_params' in globals() and col < len(grid_bubble_params):
                 radius = int(grid_bubble_params[col]['radius'] or 30)
             else:
                 radius = 30
-            # Default: unanswered
             grade_mark = '-'
             if correct_answers and q in correct_answers:
                 correct = correct_answers[q]
-                # Support multiple correct answers (comma or semicolon separated)
                 correct_opts = [c.strip().upper() for c in correct.replace(';', ',').split(',')]
-                if opt == '-' or not opt:
-                    color = (128, 128, 128)  # gray (no circle)
+                if not opt:
+                    color = (128, 128, 128)
                     score = scoring.get('unanswered', 0)
+                    grade_mark = 'nr'
                 elif opt in correct_opts:
-                    color = (0, 200, 0)  # green
+                    color = (0, 200, 0)
                     grade_mark = '+'
                     score = scoring.get('correct', 1)
                 else:
-                    color = (0, 0, 255)  # red
+                    color = (0, 0, 255)
                     grade_mark = '-'
                     score = scoring.get('incorrect', 0)
                 total_score += score
-                # Draw only for answered
                 if opt:
-                    # Draw filled circle with 90% transparency
                     overlay = debug.copy()
                     cv2.circle(overlay, (x, y), radius, color, -1)
                     cv2.addWeighted(overlay, 0.25, debug, 0.75, 0, debug)
-                    # Draw circumference
                     cv2.circle(debug, (x, y), radius, color, 2)
             else:
-                # No correct answers provided: just draw red for answered
                 if opt:
                     overlay = debug.copy()
                     cv2.circle(overlay, (x, y), radius, (0, 0, 255), -1)
                     cv2.addWeighted(overlay, 0.25, debug, 0.75, 0, debug)
                     cv2.circle(debug, (x, y), radius, (0, 0, 255), 2)
             grades_row[f"Q{q}"] = grade_mark
+
         if correct_answers:
             grades_row['grade'] = total_score
             grades_rows.append(grades_row)
-        # Save detection image in detections folder with _detections.png suffix
-        base = os.path.splitext(os.path.basename(fname))[0]
+
         debug_name = os.path.join(detections_dir, f"{base}_detections.png")
         cv2.imwrite(debug_name, debug)
-    # Save CSV in output dir
+
+    # Save results CSV
     csv_path = os.path.join(output_dir, os.path.basename(out_csv))
     pd.DataFrame(rows).to_csv(csv_path, index=False)
     print(f"Saved results to {csv_path}")
 
-    # Save grades.csv if grading was done
+    # Save grades CSV if applicable
     if grades_rows:
         all_qs = sorted({k for row in grades_rows for k in row if k.startswith('Q')})
         cols = ['file'] + all_qs + ['grade']
@@ -322,11 +309,11 @@ def process_folder(folder, out_csv="results.csv", output_dir="output", answers_c
             writer.writeheader()
             for row in grades_rows:
                 for q in all_qs:
-                    if q not in row:
-                        row[q] = '-'
+                    row.setdefault(q, '-')
                 writer.writerow(row)
         print(f"Saved grades to {grades_csv_path}")
-    # Save info.csv if needed
+
+    # Save handwriting info if enabled
     if hand_writing and info_rows:
         info_csv_path = os.path.join(students_info_dir, "info.csv")
         with open(info_csv_path, "w", newline="") as f:
@@ -334,7 +321,8 @@ def process_folder(folder, out_csv="results.csv", output_dir="output", answers_c
             writer.writeheader()
             writer.writerows(info_rows)
         print(f"Saved handwriting info to {info_csv_path}")
-    # Generate PDF with crops and filenames if get_info is set
+
+    # Generate PDF if requested
     if get_info:
         try:
             from generate_students_info_pdf import generate_pdf
@@ -343,7 +331,7 @@ def process_folder(folder, out_csv="results.csv", output_dir="output", answers_c
         except Exception as e:
             print(f"[WARN] Could not generate PDF: {e}")
 
-if __name__=="__main__":
+if __name__ == "__main__":
     import argparse
     p = argparse.ArgumentParser()
     p.add_argument("input_folder", help="folder with scanned .png sheets")
@@ -357,35 +345,52 @@ if __name__=="__main__":
     p.add_argument("--hand-writing", action="store_true", help="Enable handwriting OCR for name/id fields and generate info.csv")
     p.add_argument("--device", default="cpu", choices=["cpu", "cuda"], help="Device for OCR model (cpu or cuda)")
     p.add_argument("--debug", type=int, default=1, choices=[0,1,2], help="Debug level: 0=none, 1=all except bubble fill, 2=all")
-    p.add_argument("--image-to-name-csv", help="Path to a user-provided image-to-name CSV. If provided, it will be copied to the output directory as image-to-name.csv and the template will not be generated.")
+    p.add_argument("--image-to-name-csv", help="Path to a user-provided image-to-name CSV. If provided, it will be copied to the output directory as image-to-name.csv and the pipeline will still run.")
     args = p.parse_args()
+
     MIN_FILL = args.min_fill
     DEBUG = args.debug
+
     if not os.path.exists(args.input_folder):
         print(f"Input folder '{args.input_folder}' does not exist.")
         exit(1)
-    # Check if grid_config.json exists and is valid
+
+    # Check for grid configuration
     if not os.path.exists('grid_config.json'):
-        # Try to find a sample PNG to suggest grid setup
         imgs = glob.glob(os.path.join(args.input_folder, "*.png"))
         if not imgs:
             print('No sample PNG found in folder. Please provide an example scan.')
             sys.exit(1)
         sample = imgs[0]
-        subprocess.call(['python3', 'grid_setup.py', sample,
-                         '--cols', input('Columns? '),
-                         '--rows', input('Rows per column? '),
-                         '--options', input('Options (comma-separated)? ')])
+        subprocess.call([
+            'python3', 'grid_setup.py', sample,
+            '--cols', input('Columns? '),
+            '--rows', input('Rows per column? '),
+            '--options', input('Options (comma-separated)? ')
+        ])
         print('Configuration complete. Re-run script.')
         sys.exit(0)
-    # Load grid configuration and bubble positions
+
+    # Initialize grid
     init_grid()
-    # Handle user-provided image-to-name CSV
+
+    # If user provided an image-to-name CSV, copy it to output but still run the pipeline
     if args.image_to_name_csv:
         import shutil
         dest_csv = os.path.join(args.output, "image-to-name.csv")
         os.makedirs(args.output, exist_ok=True)
         shutil.copyfile(args.image_to_name_csv, dest_csv)
         print(f"Copied {args.image_to_name_csv} to {dest_csv}")
-    else:
-        process_folder(args.input_folder, args.csv, args.output, args.answers_csv, args.answers_json, args.scoring_json, get_info=args.get_info, hand_writing=args.hand_writing, device=args.device)
+
+    # Run the main processing pipeline
+    process_folder(
+        args.input_folder,
+        args.csv,
+        args.output,
+        args.answers_csv,
+        args.answers_json,
+        args.scoring_json,
+        get_info=args.get_info,
+        hand_writing=args.hand_writing,
+        device=args.device
+    )
