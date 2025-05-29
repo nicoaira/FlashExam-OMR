@@ -357,6 +357,7 @@ if __name__=="__main__":
     p.add_argument("--hand-writing", action="store_true", help="Enable handwriting OCR for name/id fields and generate info.csv")
     p.add_argument("--device", default="cpu", choices=["cpu", "cuda"], help="Device for OCR model (cpu or cuda)")
     p.add_argument("--debug", type=int, default=1, choices=[0,1,2], help="Debug level: 0=none, 1=all except bubble fill, 2=all")
+    p.add_argument("--image-to-name-csv", help="Path to a user-provided image-to-name CSV. If provided, it will be copied to the output directory as image-to-name.csv and the template will not be generated.")
     args = p.parse_args()
     MIN_FILL = args.min_fill
     DEBUG = args.debug
@@ -379,4 +380,12 @@ if __name__=="__main__":
         sys.exit(0)
     # Load grid configuration and bubble positions
     init_grid()
-    process_folder(args.input_folder, args.csv, args.output, args.answers_csv, args.answers_json, args.scoring_json, get_info=args.get_info, hand_writing=args.hand_writing, device=args.device)
+    # Handle user-provided image-to-name CSV
+    if args.image_to_name_csv:
+        import shutil
+        dest_csv = os.path.join(args.output, "image-to-name.csv")
+        os.makedirs(args.output, exist_ok=True)
+        shutil.copyfile(args.image_to_name_csv, dest_csv)
+        print(f"Copied {args.image_to_name_csv} to {dest_csv}")
+    else:
+        process_folder(args.input_folder, args.csv, args.output, args.answers_csv, args.answers_json, args.scoring_json, get_info=args.get_info, hand_writing=args.hand_writing, device=args.device)
