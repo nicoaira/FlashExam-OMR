@@ -301,7 +301,7 @@ def process_folder(folder, out_csv="results.csv", output_dir="output",
 
     # Save grades CSV if applicable
     if grades_rows:
-        all_qs = sorted({k for row in grades_rows for k in row if k.startswith('Q')})
+        all_qs = sorted({k for row in grades_rows for k in row if k.startswith('Q')}, key=lambda x: int(x[1:]))
         cols = ['file'] + all_qs + ['grade']
         grades_csv_path = os.path.join(output_dir, 'grades.csv')
         with open(grades_csv_path, 'w', newline='') as f:
