@@ -1,6 +1,8 @@
 exams/pagina-1.png
 exams/*
 output/*
+output*
 output/detections/*
 output/results.csv
 OMR-reader.py
+inptus/*
