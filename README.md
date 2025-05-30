@@ -1,6 +1,6 @@
-# myOMR
+# FlashExamOMR
 
-myOMR is a Python package for processing and analyzing Optical Mark Recognition (OMR) exam sheets. It provides tools to configure grid layouts for OMR sheets and to extract, match, and report exam results using scanned images and CSV mappings.
+FlashExamOMR is a Python package for processing and analyzing Optical Mark Recognition (OMR) exam sheets. It provides tools to configure grid layouts for OMR sheets and to extract, match, and report exam results using scanned images and CSV mappings.
 
 ## Components
 
